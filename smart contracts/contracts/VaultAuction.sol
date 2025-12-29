@@ -241,4 +241,19 @@ contract VaultAuction is ReentrancyGuard {
             a.startPrice
         );
     }
+    /**
+ * @notice Returns vault metadata and NFTs (without auction details)
+ */
+function getVaultDetails(uint256 vaultId)
+    external
+    view
+    returns (
+        string memory name,
+        string memory description,
+        NFTItem[] memory nfts
+    )
+{
+    Vault storage v = vaults[vaultId];
+    return (v.name, v.description, v.nfts);
+}
 }

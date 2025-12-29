@@ -10,30 +10,27 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
  */
 contract VaultAuction is ReentrancyGuard {
 
-    /**
-     * @notice Represents a single NFT inside a vault
-     */
+    /* ---------- STRUCTS ---------- */
+
     struct NFTItem {
         address nftAddress;
         uint256 tokenId;
     }
 
-    /**
-     * @notice Auction state and bidding information
-     */
     struct Auction {
         address seller;
         uint256 currentBid;
         address highestBidder;
-        uint256 endTime;
+
+        uint256 startTime;
+        uint256 lastBidTime;
+        uint256 bidWindow;
+
         bool active;
         bool ended;
         uint256 startPrice;
     }
 
-    /**
-     * @notice Vault containing NFTs and its associated auction
-     */
     struct Vault {
         NFTItem[] nfts;
         Auction auction;
@@ -41,28 +38,29 @@ contract VaultAuction is ReentrancyGuard {
         string description;
     }
 
+    /* ---------- STORAGE ---------- */
+
     uint256 public vaultCount;
     mapping(uint256 => Vault) public vaults;
-
-    /// @notice List of all vaultIds that have started auctions
     uint256[] public auctionIds;
 
+    /* ---------- EVENTS ---------- */
+
     event VaultCreated(uint256 indexed vaultId, address indexed seller);
-    event AuctionStarted(uint256 indexed vaultId, uint256 startPrice, uint256 endTime);
+    event AuctionCreated(uint256 indexed vaultId, uint256 startPrice);
+    event AuctionStarted(uint256 indexed vaultId, uint256 startTime);
     event BidPlaced(uint256 indexed vaultId, address bidder, uint256 amount);
     event AuctionEnded(uint256 indexed vaultId, address winner, uint256 finalPrice);
 
-    /**
-     * @notice Restricts function access to the vault creator
-     */
+    /* ---------- MODIFIERS ---------- */
+
     modifier onlySeller(uint256 vaultId) {
         require(msg.sender == vaults[vaultId].auction.seller, "Not vault seller");
         _;
     }
 
-    /**
-     * @notice Creates a vault by depositing NFTs and setting metadata
-     */
+    /* ---------- VAULT ---------- */
+
     function createVault(
         address[] calldata nftAddresses,
         uint256[] calldata tokenIds,
@@ -99,38 +97,51 @@ contract VaultAuction is ReentrancyGuard {
         emit VaultCreated(vaultId, msg.sender);
     }
 
-    /**
-     * @notice Starts an auction for a vault with a minimum price and duration
-     */
-    function startAuction(
+    /* ---------- AUCTION ---------- */
+
+    // Create auction without starting timer
+    function createAuction(
         uint256 vaultId,
-        uint256 startPrice,
-        uint256 duration
+        uint256 startPrice
     ) external onlySeller(vaultId) {
         Auction storage a = vaults[vaultId].auction;
 
-        require(!a.active, "Auction already active");
-        require(duration > 0, "Invalid duration");
+        require(!a.active && !a.ended, "Auction already exists");
 
-        a.currentBid = startPrice;
         a.startPrice = startPrice;
-        a.endTime = block.timestamp + duration;
+        a.currentBid = startPrice;
+        a.bidWindow = 30 seconds;
+
+        emit AuctionCreated(vaultId, startPrice);
+    }
+
+    // Start auction and enable bidding
+    function startAuction(uint256 vaultId) external onlySeller(vaultId) {
+        Auction storage a = vaults[vaultId].auction;
+
+        require(!a.active, "Auction already active");
+        require(a.startPrice > 0, "Auction not created");
+
+        a.startTime = block.timestamp;
+        a.lastBidTime = block.timestamp;
         a.active = true;
         a.ended = false;
 
         auctionIds.push(vaultId);
 
-        emit AuctionStarted(vaultId, startPrice, a.endTime);
+        emit AuctionStarted(vaultId, a.startTime);
     }
 
-    /**
-     * @notice Places a bid that must be exactly +1 over the current bid
-     */
+    // Place bid within bid window
     function bid(uint256 vaultId) external payable nonReentrant {
         Auction storage a = vaults[vaultId].auction;
 
         require(a.active, "Auction not active");
-        require(block.timestamp < a.endTime, "Auction expired");
+        require(!a.ended, "Auction ended");
+        require(
+            block.timestamp <= a.lastBidTime + a.bidWindow,
+            "Bid window expired"
+        );
         require(msg.value == a.currentBid + 1, "Bid must be +1");
 
         if (a.highestBidder != address(0)) {
@@ -139,20 +150,22 @@ contract VaultAuction is ReentrancyGuard {
 
         a.currentBid = msg.value;
         a.highestBidder = msg.sender;
+        a.lastBidTime = block.timestamp;
 
         emit BidPlaced(vaultId, msg.sender, msg.value);
     }
 
-    /**
-     * @notice Ends an auction and transfers NFTs and funds accordingly
-     */
+    // End auction after bid window expires
     function endAuction(uint256 vaultId) external nonReentrant {
         Auction storage a = vaults[vaultId].auction;
         Vault storage v = vaults[vaultId];
 
         require(a.active, "Auction not active");
-        require(block.timestamp >= a.endTime, "Auction still running");
         require(!a.ended, "Auction already ended");
+        require(
+            block.timestamp > a.lastBidTime + a.bidWindow,
+            "Auction still running"
+        );
 
         a.active = false;
         a.ended = true;
@@ -181,9 +194,8 @@ contract VaultAuction is ReentrancyGuard {
         }
     }
 
-    /**
-     * @notice Returns all NFTs stored inside a vault
-     */
+    /* ---------- GETTERS ---------- */
+
     function getVaultNFTs(uint256 vaultId)
         external
         view
@@ -192,9 +204,6 @@ contract VaultAuction is ReentrancyGuard {
         return vaults[vaultId].nfts;
     }
 
-    /**
-     * @notice Returns full auction data for a vault
-     */
     function getAuction(uint256 vaultId)
         external
         view
@@ -203,9 +212,6 @@ contract VaultAuction is ReentrancyGuard {
         return vaults[vaultId].auction;
     }
 
-    /**
-     * @notice Returns all vaultIds that have auctions
-     */
     function getAllAuctions()
         external
         view
@@ -214,9 +220,6 @@ contract VaultAuction is ReentrancyGuard {
         return auctionIds;
     }
 
-    /**
-     * @notice Returns minimal auction data for rendering auction cards
-     */
     function getAuctionCard(uint256 vaultId)
         external
         view
@@ -232,49 +235,50 @@ contract VaultAuction is ReentrancyGuard {
         Vault storage v = vaults[vaultId];
         Auction storage a = v.auction;
 
+        uint256 remaining = block.timestamp >= a.lastBidTime + a.bidWindow
+            ? 0
+            : (a.lastBidTime + a.bidWindow - block.timestamp);
+
         return (
             v.name,
             v.description,
             a.active,
             a.ended,
-            block.timestamp >= a.endTime ? 0 : a.endTime - block.timestamp,
+            remaining,
             a.startPrice
         );
     }
-    
-/**
- * @notice Returns full vault details including NFTs and auction info
- */
-function getVaultWithAuction(uint256 vaultId)
-    external
-    view
-    returns (
-        string memory name,
-        string memory description,
-        NFTItem[] memory nfts,
-        address seller,
-        uint256 currentBid,
-        address highestBidder,
-        uint256 endTime,
-        bool active,
-        bool ended,
-        uint256 startPrice
-    )
-{
-    Vault storage v = vaults[vaultId];
-    Auction storage a = v.auction;
 
-    return (
-        v.name,
-        v.description,
-        v.nfts,
-        a.seller,
-        a.currentBid,
-        a.highestBidder,
-        a.endTime,
-        a.active,
-        a.ended,
-        a.startPrice
-    );
-}
+    function getVaultWithAuction(uint256 vaultId)
+        external
+        view
+        returns (
+            string memory name,
+            string memory description,
+            NFTItem[] memory nfts,
+            address seller,
+            uint256 currentBid,
+            address highestBidder,
+            uint256 lastBidTime,
+            bool active,
+            bool ended,
+            uint256 startPrice
+        )
+    {
+        Vault storage v = vaults[vaultId];
+        Auction storage a = v.auction;
+
+        return (
+            v.name,
+            v.description,
+            v.nfts,
+            a.seller,
+            a.currentBid,
+            a.highestBidder,
+            a.lastBidTime,
+            a.active,
+            a.ended,
+            a.startPrice
+        );
+    }
 }

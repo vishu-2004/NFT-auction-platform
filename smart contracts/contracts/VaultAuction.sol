@@ -502,4 +502,28 @@ contract VaultAuction is ReentrancyGuard {
             a.startPrice
         );
     }
+    /**
+ * @notice Returns timing-related auction data for frontend sync
+ */
+function getAuctionTiming(uint256 vaultId)
+    external
+    view
+    returns (
+        uint256 lastBidTime,
+        uint256 bidWindow,
+        uint256 endTime,
+        bool active,
+        bool ended
+    )
+{
+    Auction storage a = vaults[vaultId].auction;
+
+    return (
+        a.lastBidTime,
+        a.bidWindow,
+        a.endTime,
+        a.active,
+        a.ended
+    );
+}
 }
